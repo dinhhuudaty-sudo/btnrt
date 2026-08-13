@@ -2483,10 +2483,6 @@ html { -webkit-touch-callout: none; }
   let isFirebaseReady = false;
   
   function initFirebase(){
-    // Firebase cloud sync disabled: local data is authoritative.
-    // This prevents old cloud data from restoring/resetting the UI.
-    document.getElementById('firebaseStatus')?.remove();
-    return;
     try{
       if(false){ // Firebase đã cấu hình
         console.log('⚠️ Chưa cấu hình Firebase - đang dùng chế độ local only');
@@ -2639,11 +2635,11 @@ html { -webkit-touch-callout: none; }
   };
   
   // Khởi tạo
-  // Firebase sync intentionally disabled to prevent cloud resets.
-  // setTimeout(initFirebase, 1000);
+  setTimeout(initFirebase, 1000);
 })();
 </script>
 
+<div id="firebaseStatus" style="position:fixed; top:70px; right:20px; background:rgba(251,146,60,0.15); border:1px solid rgba(251,146,60,0.3); color:#fb923c; padding:6px 10px; border-radius:8px; font-size:10px; z-index:9998; backdrop-filter:blur(10px);">⏳ Đang kiểm tra cloud...</div>
 
 </body>
 </html>
