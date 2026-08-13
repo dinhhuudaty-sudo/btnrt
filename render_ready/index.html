@@ -1455,10 +1455,12 @@ Thành tích: Top 4 FFWS Regional • 800k followers tổng • 200+ giải cust
     renderMessagesPrivate();
   }, 1000);
   
-  // Keep old interval updates
+  // Fallback nhẹ: nếu một script khác thay đổi localStorage,
+  // chat vẫn tự vẽ lại mà không cần reload.
   setInterval(()=>{
     renderPrivateUserList();
-  }, 3000);
+    renderMessagesPrivate();
+  }, 1000);
 })();
 </script>
 
@@ -2585,16 +2587,101 @@ html { -webkit-touch-callout: none; }
         }
       }).catch(err=>console.warn('Firebase read failed:', err));
 
-      // Realtime updates from other devices. Ignore our own echo and never reload.
+      // REALTIME CHAT SYNC
+      // Tin nhắn được nghe riêng để UI cập nhật ngay khi Firebase thay đổi.
+      // Không reload trang, không chờ F5.
+      const chatRef = db.ref('btn_data/btn_private_chats');
+      chatRef.on('value', snap=>{
+        const cloudChats = snap.val();
+        if(cloudChats == null) return;
+
+        let cloudValue = typeof cloudChats === 'string'
+          ? cloudChats
+          : JSON.stringify(cloudChats);
+
+        let localValue = localStorage.getItem('btn_private_chats') || '';
+        if(cloudValue === localValue) return;
+
+        try{
+          // Chỉ cập nhật dữ liệu chat, không đụng vào các phần khác.
+          applyingCloud = true;
+          localStorage.setItem('btn_private_chats', cloudValue);
+          lastLocalSnapshot = snapshot(collectData());
+        }catch(err){
+          console.warn('Realtime chat local update failed:', err);
+        }finally{
+          applyingCloud = false;
+        }
+
+        // QUAN TRỌNG: cập nhật giao diện ngay lập tức.
+        // Không cần F5 / chuyển trang / reset.
+        try{
+          if(typeof window.renderPrivateUserList === 'function'){
+            window.renderPrivateUserList();
+          }
+          if(typeof window.renderMessagesPrivate === 'function'){
+            window.renderMessagesPrivate();
+          }
+        }catch(err){
+          console.warn('Realtime chat render failed:', err);
+        }
+
+        console.log('💬 ⚡ Đã nhận tin nhắn mới theo thời gian thực');
+      });
+
+      // Realtime updates for the rest of the app.
+      // Still no reloads; chat has its dedicated listener above.
       db.ref('btn_data').on('value', snap=>{
         const cloud = snap.val();
         if(!cloud) return;
-        const cloudUpdated = Number(cloud._updatedAt) || 0;
+        const cloudUpdated = Number(cloud && cloud._updatedAt) || 0;
         const localUpdated = Number(localStorage.getItem(META_KEY)) || 0;
-        if(cloudUpdated <= localUpdated) return;
-        writeCloudToLocal(cloud, cloudUpdated);
+
+        // Chat is handled by the dedicated listener above.
+        const hasOtherChanges = Object.keys(cloud).some(
+          k => k !== 'btn_private_chats' && k !== '_updatedAt'
+        );
+
+        if(cloudUpdated <= localUpdated){
+          // Even when the timestamp is equal, refresh chat UI if needed.
+          // This makes the interface robust against same-millisecond writes.
+          if(cloud.btn_private_chats != null){
+            try{
+              const cloudChatValue = typeof cloud.btn_private_chats === 'string'
+                ? cloud.btn_private_chats
+                : JSON.stringify(cloud.btn_private_chats);
+              if(cloudChatValue !== (localStorage.getItem('btn_private_chats') || '')){
+                applyingCloud = true;
+                localStorage.setItem('btn_private_chats', cloudChatValue);
+                applyingCloud = false;
+                window.renderPrivateUserList?.();
+                window.renderMessagesPrivate?.();
+              }
+            }catch(e){
+              applyingCloud = false;
+            }
+          }
+          return;
+        }
+
+        // Apply non-chat data normally. The chat listener already handles chat.
+        if(hasOtherChanges){
+          const nonChat = {};
+          Object.keys(cloud).forEach(k=>{
+            if(k !== 'btn_private_chats') nonChat[k] = cloud[k];
+          });
+          writeCloudToLocal(nonChat, cloudUpdated);
+        }
+
         lastUploaded = snapshot(collectData());
-        console.log('☁️ Đã nhận thay đổi từ thiết bị khác');
+
+        // Render chat after any cloud sync as an extra safety net.
+        try{
+          window.renderPrivateUserList?.();
+          window.renderMessagesPrivate?.();
+        }catch(e){}
+
+        console.log('☁️ Đã nhận thay đổi từ thiết bị khác - không reload');
       });
 
       // Detect edits made by the existing app (it writes localStorage directly).
@@ -2615,9 +2702,14 @@ html { -webkit-touch-callout: none; }
   }
 
   // Manual functions kept for compatibility with the existing admin UI.
-  window.btnPushToCloud = function(){
-    if(!ready){ alert('Firebase chưa sẵn sàng.'); return; }
-    pushLocal('manual').then(()=>alert('✅ Đã lưu dữ liệu lên cloud!'));
+  window.btnPushToCloud = function(silent){
+    if(!ready){
+      if(!silent) alert('Firebase chưa sẵn sàng.');
+      return;
+    }
+    pushLocal(silent ? 'chat realtime' : 'manual').then(()=>{
+      if(!silent) alert('✅ Đã lưu dữ liệu lên cloud!');
+    });
   };
 
   window.btnPullFromCloud = function(){
