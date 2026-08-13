@@ -2467,7 +2467,9 @@ html { -webkit-touch-callout: none; }
 
 <script>
 (function(){
-  // ===== CẤU HÌNH FIREBASE - BẠN THAY BẰNG CONFIG CỦA BẠN =====
+  // ===== FIREBASE CLOUD SYNC =====
+  // Cloud is the shared source of truth, but edits made on this device are
+  // uploaded automatically. No reloads are performed and no status badge is shown.
   const firebaseConfig = {
     apiKey: "AIzaSyBtYQ2YjoMf5xoUyPwjJ1rhECUIoK77L-I",
     authDomain: "btn-esport-a9460.firebaseapp.com",
@@ -2478,168 +2480,161 @@ html { -webkit-touch-callout: none; }
     appId: "1:339636392260:web:4c3bd3ba4d7bbd33508711",
     measurementId: "G-LEE9G8BWD6"
   };
-  
+
   let db = null;
-  let isFirebaseReady = false;
-  
-  function initFirebase(){
+  let ready = false;
+  let applyingCloud = false;
+  let lastUploaded = '';
+  let lastLocalSnapshot = '';
+  let saveTimer = null;
+
+  const BIO_KEY = 'btn_bio_v9';
+  const META_KEY = 'btn_cloud_updated_at';
+
+  function collectData(){
+    const data = {};
+    for(let i=0;i<localStorage.length;i++){
+      const k = localStorage.key(i);
+      if(k && k.startsWith('btn_') && k !== META_KEY){
+        data[k] = localStorage.getItem(k);
+      }
+    }
+    return data;
+  }
+
+  function snapshot(data){
+    try { return JSON.stringify(data); } catch(e) { return ''; }
+  }
+
+  function cleanBio(value){
     try{
-      if(false){ // Firebase đã cấu hình
-        console.log('⚠️ Chưa cấu hình Firebase - đang dùng chế độ local only');
-        document.getElementById('firebaseStatus')?.remove();
-        // Hiện hướng dẫn
-        setTimeout(showFirebaseGuide, 2000);
-        return;
+      const bio = typeof value === 'string' ? JSON.parse(value) : (value || {});
+      // Keep the user's current link list. Older versions that intentionally
+      // cleared links already saved an empty array locally.
+      return JSON.stringify(bio);
+    }catch(e){ return value; }
+  }
+
+  function writeCloudToLocal(data, updatedAt){
+    if(!data || typeof data !== 'object') return;
+    applyingCloud = true;
+    try{
+      for(const k in data){
+        if(k.startsWith('btn_') && k !== META_KEY){
+          const value = typeof data[k] === 'string' ? data[k] : JSON.stringify(data[k]);
+          localStorage.setItem(k, k === BIO_KEY ? cleanBio(value) : value);
+        }
       }
-      firebase.initializeApp(firebaseConfig);
-      db = firebase.database();
-      isFirebaseReady = true;
-      console.log('✅ Firebase đã kết nối');
-      setupSync();
-      let status = document.getElementById('firebaseStatus');
-      if(status){ status.textContent = '☁️ Đã kết nối cloud - đồng bộ mọi nơi'; status.style.background='rgba(34,197,94,0.2)'; status.style.borderColor='rgba(34,197,94,0.4)'; status.style.color='#4ade80'; }
-    }catch(e){
-      console.log('Firebase init fail', e);
+      if(updatedAt) localStorage.setItem(META_KEY, String(updatedAt));
+      lastLocalSnapshot = snapshot(collectData());
+    } finally {
+      applyingCloud = false;
     }
   }
-  
-  function showFirebaseGuide(){
-    let guide = document.createElement('div');
-    guide.id='firebaseGuide';
-    guide.style.cssText='position:fixed; bottom:20px; right:20px; left:20px; max-width:420px; margin-left:auto; background:rgba(10,15,28,0.95); border:1px solid rgba(251,146,60,0.5); border-radius:16px; padding:16px; z-index:10000; backdrop-filter:blur(20px);';
-    guide.innerHTML=`
-      <div style="font-weight:900; color:#fb923c; margin-bottom:8px;">⚠️ Chưa đồng bộ cloud</div>
-      <div style="font-size:11px; color:#94a3b8; line-height:1.5; margin-bottom:12px;">
-        Hiện tại web chỉ lưu trên máy bạn (IndexedDB). Sang máy khác sẽ không thấy chỉnh sửa.<br>
-        Muốn chỉnh ở đâu cũng hiện, làm 3 bước:
-      </div>
-      <div style="font-size:10px; background:rgba(0,0,0,0.4); padding:10px; border-radius:8px; color:#e2e8f0; line-height:1.6;">
-        1. Vào <b>firebase.google.com</b> → Tạo project<br>
-        2. Realtime Database → Create → Asia Southeast<br>
-        3. Copy config dán vào file index.html dòng firebaseConfig<br>
-        4. Deploy lại lên Render
-      </div>
-      <button onclick="this.parentElement.remove()" style="margin-top:10px; background:#1e293b; color:white; border:none; padding:6px 12px; border-radius:8px; font-size:10px; cursor:pointer;">Đã hiểu</button>
-    `;
-    document.body.appendChild(guide);
-  }
-  
-  function setupSync(){
-    if(!db) return;
 
-    const collectLocalData = ()=>{
-      let data = {};
-      for(let i=0;i<localStorage.length;i++){
-        let k = localStorage.key(i);
-        if(k && k.startsWith('btn_')) data[k] = localStorage.getItem(k);
-      }
-      return data;
-    };
-
-    const sanitizeCloudData = (data)=>{
-      if(!data || typeof data !== 'object') return data;
-      if(data.btn_bio_v9){
-        try{
-          let bio = typeof data.btn_bio_v9 === 'string' ? JSON.parse(data.btn_bio_v9) : data.btn_bio_v9;
-          bio.links = [];
-          data.btn_bio_v9 = JSON.stringify(bio);
-        }catch(e){}
-      }
-      return data;
-    };
-
-    const attachListener = ()=>{
-      db.ref('btn_data').on('value', (snap)=>{
-        let cloudData = sanitizeCloudData(snap.val());
-        if(!cloudData) return;
-        let changed = false;
-        for(let k in cloudData){
-          if(k.startsWith('btn_')){
-            let local = localStorage.getItem(k);
-            let cloudVal = typeof cloudData[k] === 'string' ? cloudData[k] : JSON.stringify(cloudData[k]);
-            if(local !== cloudVal){
-              localStorage.setItem(k, cloudVal);
-              changed = true;
-            }
-          }
-        }
-        if(changed) console.log('🔄 Đã đồng bộ dữ liệu cloud');
-      });
-
-      setInterval(()=>{
-        if(!isFirebaseReady) return;
-        let data = collectLocalData();
-        data['_lastSync'] = new Date().toISOString();
-        db.ref('btn_data').update(data).catch(e=>console.log('sync fail',e));
-      },3000);
-    };
-
-    // Local data is authoritative when it already exists. This prevents old cloud data
-    // from resurrecting deleted links after a page change or refresh.
-    let localBio = localStorage.getItem('btn_bio_v9');
-    if(localBio){
-      let data = collectLocalData();
-      db.ref('btn_data').update(data).then(()=>{
-        console.log('☁️ Đã ưu tiên dữ liệu trên máy và cập nhật cloud');
-        attachListener();
-      }).catch(()=>attachListener());
-    }else{
-      db.ref('btn_data').once('value').then(snap=>{
-        let cloudData = sanitizeCloudData(snap.val());
-        if(cloudData){
-          for(let k in cloudData){
-            if(k.startsWith('btn_')) localStorage.setItem(k, typeof cloudData[k]==='string' ? cloudData[k] : JSON.stringify(cloudData[k]));
-          }
-          console.log('☁️ Đã tải dữ liệu cloud lần đầu - không reload tự động');
-          attachListener();
-          return;
-        }
-        attachListener();
-      }).catch(()=>attachListener());
-    }
-
-    db.ref('btn_music_name').on('value', snap=>{
-      let name = snap.val();
-      if(name && name!==localStorage.getItem('btn_music_name')) localStorage.setItem('btn_music_name',name);
+  function pushLocal(reason){
+    if(!ready || applyingCloud) return Promise.resolve();
+    const data = collectData();
+    const snap = snapshot(data);
+    if(!snap || snap === lastUploaded) return Promise.resolve();
+    const updatedAt = Date.now();
+    data._updatedAt = updatedAt;
+    lastUploaded = snap;
+    return db.ref('btn_data').update(data).then(()=>{
+      localStorage.setItem(META_KEY, String(updatedAt));
+      lastLocalSnapshot = snap;
+      console.log('☁️ Đã lưu thay đổi lên cloud', reason || '');
+    }).catch(err=>{
+      // Allow a later attempt instead of losing the edit.
+      lastUploaded = '';
+      console.warn('Firebase save failed:', err);
     });
   }
 
-  // Hàm push thủ công
-  window.btnPushToCloud = function(){
-    if(!db){ alert('Chưa cấu hình Firebase'); return; }
-    let data = {};
-    for(let i=0;i<localStorage.length;i++){
-      let k=localStorage.key(i);
-      if(k && k.startsWith('btn_')) data[k]=localStorage.getItem(k);
+  function schedulePush(reason){
+    if(applyingCloud) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(()=>pushLocal(reason), 700);
+  }
+
+  function initFirebase(){
+    // Remove any old status element from previous versions.
+    document.getElementById('firebaseStatus')?.remove();
+    document.getElementById('firebaseGuide')?.remove();
+    try{
+      if(!window.firebase || !firebase.initializeApp) return;
+      if(!firebase.apps || !firebase.apps.length) firebase.initializeApp(firebaseConfig);
+      db = firebase.database();
+      ready = true;
+
+      db.ref('btn_data').once('value').then(snap=>{
+        const cloud = snap.val();
+        const cloudUpdated = Number(cloud && cloud._updatedAt) || 0;
+        const localUpdated = Number(localStorage.getItem(META_KEY)) || 0;
+        const local = collectData();
+
+        if(cloud && cloudUpdated > localUpdated){
+          // A newer cloud version exists: use it locally. No reload.
+          writeCloudToLocal(cloud, cloudUpdated);
+          lastUploaded = snapshot(collectData());
+        } else if(local && Object.keys(local).length){
+          // Local edits are newer/equal or this is a first-time local install:
+          // publish them instead of allowing old cloud data to overwrite them.
+          lastUploaded = '';
+          pushLocal('initial local sync');
+        }
+      }).catch(err=>console.warn('Firebase read failed:', err));
+
+      // Realtime updates from other devices. Ignore our own echo and never reload.
+      db.ref('btn_data').on('value', snap=>{
+        const cloud = snap.val();
+        if(!cloud) return;
+        const cloudUpdated = Number(cloud._updatedAt) || 0;
+        const localUpdated = Number(localStorage.getItem(META_KEY)) || 0;
+        if(cloudUpdated <= localUpdated) return;
+        writeCloudToLocal(cloud, cloudUpdated);
+        lastUploaded = snapshot(collectData());
+        console.log('☁️ Đã nhận thay đổi từ thiết bị khác');
+      });
+
+      // Detect edits made by the existing app (it writes localStorage directly).
+      // This makes the current UI save to Firebase without modifying its React code.
+      setInterval(()=>{
+        if(!ready || applyingCloud) return;
+        const current = snapshot(collectData());
+        if(current && current !== lastLocalSnapshot){
+          lastLocalSnapshot = current;
+          schedulePush('local edit');
+        }
+      }, 1000);
+
+      lastLocalSnapshot = snapshot(collectData());
+    }catch(err){
+      console.warn('Firebase init failed:', err);
     }
-    db.ref('btn_data').update(data).then(()=>alert('✅ Đã đồng bộ dữ liệu hiện tại lên cloud!'));
+  }
+
+  // Manual functions kept for compatibility with the existing admin UI.
+  window.btnPushToCloud = function(){
+    if(!ready){ alert('Firebase chưa sẵn sàng.'); return; }
+    pushLocal('manual').then(()=>alert('✅ Đã lưu dữ liệu lên cloud!'));
   };
 
   window.btnPullFromCloud = function(){
-    if(!db){ alert('Chưa cấu hình Firebase'); return; }
-    if(!confirm('Kéo dữ liệu cloud sẽ ghi đè dữ liệu hiện tại trên máy. Tiếp tục?')) return;
+    if(!ready){ alert('Firebase chưa sẵn sàng.'); return; }
     db.ref('btn_data').once('value').then(snap=>{
-      let d=snap.val();
-      if(!d){ alert('Cloud trống'); return; }
-      for(let k in d){
-        if(k.startsWith('btn_')){
-          let val=typeof d[k]==='string'?d[k]:JSON.stringify(d[k]);
-          if(k==='btn_bio_v9'){
-            try{let bio=JSON.parse(val);bio.links=[];val=JSON.stringify(bio);}catch(e){}
-          }
-          localStorage.setItem(k,val);
-        }
-      }
-      alert('✅ Đã kéo dữ liệu cloud (liên kết xã hội đã được làm sạch).');
-    });
+      const data = snap.val();
+      if(!data){ alert('Cloud đang trống.'); return; }
+      writeCloudToLocal(data, Number(data._updatedAt)||Date.now());
+      alert('✅ Đã đồng bộ dữ liệu từ cloud.');
+    }).catch(()=>alert('❌ Không thể đọc dữ liệu cloud.'));
   };
-  
-  // Khởi tạo
+
+  // Start once. No page reloads and no cloud-status banner.
   setTimeout(initFirebase, 1000);
 })();
 </script>
 
-<div id="firebaseStatus" style="position:fixed; top:70px; right:20px; background:rgba(251,146,60,0.15); border:1px solid rgba(251,146,60,0.3); color:#fb923c; padding:6px 10px; border-radius:8px; font-size:10px; z-index:9998; backdrop-filter:blur(10px);">⏳ Đang kiểm tra cloud...</div>
 
 </body>
 </html>
