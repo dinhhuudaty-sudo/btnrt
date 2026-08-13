@@ -2136,8 +2136,7 @@ div[class*="w-[112px]"]:hover {
           }
         }
         console.log('✅ Khôi phục xong');
-        // Reload để áp dụng
-        setTimeout(()=> location.reload(), 500);
+        // Không reload tự động: tránh vòng lặp reset/reload.
         return true;
       }
       // Nếu localStorage có nhưng IndexedDB mới hơn, đồng bộ
@@ -2229,8 +2228,7 @@ div[class*="w-[112px]"]:hover {
           }
         }
         saveAllPermanent().then(()=>{
-          alert('✅ Đã nhập backup! Trang sẽ reload.');
-          location.reload();
+          alert('✅ Đã nhập backup! Dữ liệu đã được khôi phục, không cần reload.');
         });
       }catch(err){ alert('❌ File backup lỗi: '+err.message); }
     };
@@ -2592,8 +2590,8 @@ html { -webkit-touch-callout: none; }
           for(let k in cloudData){
             if(k.startsWith('btn_')) localStorage.setItem(k, typeof cloudData[k]==='string' ? cloudData[k] : JSON.stringify(cloudData[k]));
           }
-          console.log('☁️ Đã tải dữ liệu cloud lần đầu');
-          location.reload();
+          console.log('☁️ Đã tải dữ liệu cloud lần đầu - không reload tự động');
+          attachListener();
           return;
         }
         attachListener();
@@ -2632,8 +2630,7 @@ html { -webkit-touch-callout: none; }
           localStorage.setItem(k,val);
         }
       }
-      alert('✅ Đã kéo dữ liệu cloud (liên kết xã hội đã được làm sạch), reload trang');
-      location.reload();
+      alert('✅ Đã kéo dữ liệu cloud (liên kết xã hội đã được làm sạch).');
     });
   };
   
