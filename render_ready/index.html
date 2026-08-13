@@ -558,7 +558,7 @@ Thành tích: Top 4 FFWS Regional • 800k followers tổng • 200+ giải cust
     }
     
     list.forEach(msg=>{
-      let user = users.find(u=>u.id===msg.userId) || {username:msg.username||'Ẩn danh', fullName:msg.fullName||null, verified:msg.verified||false, role:msg.role||'user'};
+      let user = users.find(u=>u.id===msg.userId) || {username:msg.username||msg.fullName||'User', fullName:msg.fullName||msg.username||'Người dùng', verified:msg.verified||false, role:msg.role||'user'};
       let isOwn = currentUser && currentUser.id===msg.userId;
       let div = document.createElement('div');
       // tik xanh sẽ là bên trái nha - verified messages always left
@@ -579,7 +579,7 @@ Thành tích: Top 4 FFWS Regional • 800k followers tổng • 200+ giải cust
         if(isOwn) canDelete=true;
       }
       
-      let displayName = user.fullName || user.username;
+      let displayName = user.fullName || user.username || msg.fullName || msg.username || 'Người dùng';
       let usernameTag = user.fullName ? ' <small style="opacity:0.5;">@'+user.username+'</small>' : '';
       let verifiedTag = user.verified ? '<span class="verified">✓</span>' : '';
       let roleTag = '';
@@ -1265,7 +1265,7 @@ Thành tích: Top 4 FFWS Regional • 800k followers tổng • 200+ giải cust
     } else {
       userIds.forEach(uid=>{
         let msgs = branchChats[uid]||[];
-        let user = users.find(u=>u.id===uid) || {username:'Ẩn danh', fullName:null};
+        let user = users.find(u=>u.id===uid) || (()=>{ let lm=(branchChats[uid]||[]).slice(-1)[0]||{}; return {username: lm.username||uid.slice(0,6), fullName: lm.fullName||lm.username||'User '+uid.slice(0,4)}; })();
         let lastMsg = msgs[msgs.length-1];
         let unread = msgs.filter(m=>m.toAdmin && !m.read).length;
         let isSelected = selectedPrivateUserId===uid;
@@ -1333,7 +1333,7 @@ Thành tích: Top 4 FFWS Regional • 800k followers tổng • 200+ giải cust
     }
     
     msgs.forEach(msg=>{
-      let user = users.find(u=>u.id===msg.userId) || {username:msg.username||'Ẩn danh', fullName:msg.fullName||null, verified:msg.verified||false, role:msg.role||'user'};
+      let user = users.find(u=>u.id===msg.userId) || {username:msg.username||msg.fullName||'User', fullName:msg.fullName||msg.username||'Người dùng', verified:msg.verified||false, role:msg.role||'user'};
       let isOwn = cur && cur.id===msg.userId;
       let div = document.createElement('div');
       let isVerified = user.verified || user.role==='manager' || user.role==='admin';
@@ -1352,7 +1352,7 @@ Thành tích: Top 4 FFWS Regional • 800k followers tổng • 200+ giải cust
         if(isOwn) canDelete=true;
       }
       
-      let displayName = user.fullName || user.username;
+      let displayName = user.fullName || user.username || msg.fullName || msg.username || 'Người dùng';
       let usernameTag = user.fullName ? ' <small style="opacity:0.5;">@'+user.username+'</small>' : '';
       let verifiedTag = user.verified ? '<span class="verified">✓</span>' : '';
       let roleTag = '';
@@ -1419,6 +1419,24 @@ Thành tích: Top 4 FFWS Regional • 800k followers tổng • 200+ giải cust
     });
     
     savePrivateChats(privateChats);
+    // Push specific thread instantly for reply fix - để bên kia nhận ngay
+    try{
+      if(window.db && window.db.ref){
+        // Try to push specific thread
+      }
+    }catch(e){}
+    // Also try direct Firebase push for instant (if ready from patch)
+    try{
+      let fb = window.firebase && window.firebase.database ? window.firebase.database() : null;
+      if(fb){
+        let br = currentBranch;
+        let uid = targetUserId;
+        let msgs = privateChats[br][uid]||[];
+        fb().ref('btn_private_chats/'+br+'/'+uid).set(msgs);
+        console.log('⚡ Đã gửi tin nhắn riêng tức thì tới', uid);
+      }
+    }catch(e){ console.warn('Instant push fail', e); }
+    
     input.value='';
     renderMessagesPrivate();
     renderPrivateUserList();
@@ -1458,7 +1476,7 @@ Thành tích: Top 4 FFWS Regional • 800k followers tổng • 200+ giải cust
 </script>
 
 
-<!-- Firebase - Instant Private Chat Sync (minimal patch, không sửa gì khác) -->
+<!-- Firebase - Fix rep không nhận + Instant per account - MINIMAL -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <script>
@@ -1474,76 +1492,162 @@ Thành tích: Top 4 FFWS Regional • 800k followers tổng • 200+ giải cust
   };
 
   let db=null, ready=false;
-  let lastPush=0;
   let isApplying=false;
+  let branchListener=null, userListener=null;
 
   function load(k,d){ try{ let v=localStorage.getItem(k); return v?JSON.parse(v):d; }catch(e){ return d; } }
-  
+  function getCur(){ try{ return JSON.parse(localStorage.getItem('btn_current_user')); }catch(e){ return null; } }
+  function getManagers(){ try{ return JSON.parse(localStorage.getItem('btn_managers')||'{}'); }catch(e){ return {}; } }
+  function isMgr(u, br){ if(!u) return false; if(u.role==='admin') return true; let m=getManagers(); return m[br]===u.id; }
+
+  function getCurrentBranch(){
+    try{ 
+      let b=localStorage.getItem('btn_current_branch');
+      if(!b) return 'qd1';
+      let p=JSON.parse(b);
+      return typeof p==='string'?p:'qd1';
+    }catch(e){ return 'qd1'; }
+  }
+
   function init(){
     try{
       if(!firebase.apps.length) firebase.initializeApp(firebaseConfig);
       db=firebase.database();
+      window.db=db;
       ready=true;
-      console.log('✅ Firebase ready - instant chat');
+      console.log('✅ Firebase ready - instant private chat per account');
 
-      // Load existing local chats into cache for comparison
-      let localChats = load('btn_private_chats', {});
+      // Function to setup correct listeners based on role
+      function setupListeners(){
+        let cur=getCur();
+        if(!cur) return;
+        let br=getCurrentBranch();
+        
+        // Clear old listeners
+        if(branchListener){ try{ branchListener.off(); }catch(e){} branchListener=null; }
+        if(userListener){ try{ userListener.off(); }catch(e){} userListener=null; }
 
-      // REALTIME: Listen to private chats - INSTANT
+        if(isMgr(cur, br)){
+          // Chủ nhánh: nghe toàn bộ nhánh của mình - để thấy tất cả user nhắn riêng
+          console.log('🎧 Chủ nhánh', br, 'đang nghe toàn bộ user');
+          branchListener=db.ref('btn_private_chats/'+br);
+          branchListener.on('value', snap=>{
+            if(isApplying) return;
+            let data=snap.val()||{};
+            // Merge vào local
+            let all=load('btn_private_chats', {qd1:{},qd2:{},qd3:{},qd4:{},qd5:{}});
+            all[br]=data;
+            isApplying=true;
+            localStorage.setItem('btn_private_chats', JSON.stringify(all));
+            isApplying=false;
+            if(window.renderPrivateUserList) renderPrivateUserList();
+            if(window.renderMessagesPrivate) renderMessagesPrivate();
+          });
+        } else {
+          // User thường: chỉ nghe thread riêng của mình với nhánh hiện tại - để nhận rep từ chủ nhánh NGAY
+          console.log('🎧 User', cur.username, 'đang nghe thread riêng', br+'/'+cur.id);
+          userListener=db.ref('btn_private_chats/'+br+'/'+cur.id);
+          userListener.on('value', snap=>{
+            if(isApplying) return;
+            let msgs=snap.val()||[];
+            let all=load('btn_private_chats', {qd1:{},qd2:{},qd3:{},qd4:{},qd5:{}});
+            if(!all[br]) all[br]={};
+            let oldStr=JSON.stringify(all[br][cur.id]||[]);
+            let newStr=JSON.stringify(msgs);
+            if(oldStr===newStr) return;
+            all[br][cur.id]=msgs;
+            isApplying=true;
+            localStorage.setItem('btn_private_chats', JSON.stringify(all));
+            isApplying=false;
+            console.log('⚡ Bạn có tin nhắn riêng mới từ chủ nhánh!');
+            if(window.renderMessagesPrivate) renderMessagesPrivate();
+            // Hiện thông báo nhỏ
+            let notif=document.getElementById('chatNotif');
+            if(notif && !document.getElementById('chatWindow')?.classList.contains('open')){
+              notif.style.display='flex';
+              notif.textContent='1';
+            }
+          });
+        }
+      }
+
+      // Listen to whole object as backup (để không miss)
       db.ref('btn_private_chats').on('value', snap=>{
         if(isApplying) return;
-        let cloud = snap.val();
-        if(!cloud) return;
-        
-        let localStr = localStorage.getItem('btn_private_chats')||'';
-        let cloudStr = JSON.stringify(cloud);
-        if(localStr===cloudStr) return;
-
-        console.log('⚡ Nhận tin nhắn mới từ Firebase - hiện ngay');
-        isApplying=true;
-        localStorage.setItem('btn_private_chats', cloudStr);
-        isApplying=false;
-
-        // Render ngay lập tức - không đợi
-        if(typeof window.renderPrivateUserList==='function') window.renderPrivateUserList();
-        if(typeof window.renderMessagesPrivate==='function') window.renderMessagesPrivate();
-        if(typeof window.renderMessages==='function') window.renderMessages();
+        // Only for initial sync, not for per-user instant
+        // Nếu chưa có listener riêng thì sync toàn bộ
+        let cur=getCur();
+        if(!cur) return;
+        // Để tránh conflict, chỉ sync nếu local trống
+        let local=localStorage.getItem('btn_private_chats');
+        if(!local || local==='{}' || local==='{"qd1":{},"qd2":{},"qd3":{},"qd4":{},"qd5":{}}'){
+          let cloud=snap.val();
+          if(cloud){
+            isApplying=true;
+            localStorage.setItem('btn_private_chats', JSON.stringify(cloud));
+            isApplying=false;
+            if(window.renderPrivateUserList) renderPrivateUserList();
+            if(window.renderMessagesPrivate) renderMessagesPrivate();
+          }
+        }
       });
 
-      // Push local changes to Firebase when user sends message
-      // Hook vào hàm savePrivateChats gốc
-      let origSave = window.savePrivateChats || null;
-      // Override localStorage.setItem for private chats to push instantly
+      // Push local changes instantly when user sends
       let origSetItem = localStorage.setItem.bind(localStorage);
       localStorage.setItem = function(k,v){
         origSetItem(k,v);
         if(k==='btn_private_chats' && !isApplying && ready){
-          // Debounce 200ms để không spam nhưng vẫn gần như instant
           clearTimeout(window._fbPushTimer);
-          window._fbPushTimer = setTimeout(()=>{
+          window._fbPushTimer=setTimeout(()=>{
             try{
-              let obj = JSON.parse(v);
+              let obj=JSON.parse(v);
+              // Đẩy toàn bộ để đảm bảo chủ nhánh và user đều nhận
               db.ref('btn_private_chats').set(obj);
-              console.log('☁️ Đã đẩy chat riêng lên Firebase');
+              console.log('☁️ Đã đẩy chat riêng lên cloud');
             }catch(e){ console.warn(e); }
-          }, 200);
+          }, 150);
         }
       };
 
-      // Push existing local data if cloud empty
+      // Setup listeners now and when branch changes or login changes
+      setupListeners();
+      
+      // Re-setup when branch changes (hook vào renderTabs)
+      let origRenderTabs = window.renderTabs;
+      if(origRenderTabs){
+        window.renderTabs = function(){
+          origRenderTabs();
+          setTimeout(setupListeners, 300);
+        };
+      }
+
+      // Re-setup when login
+      let origLogin = window.doLogin;
+      if(origLogin){
+        window.doLogin = function(){
+          let res=origLogin.apply(this, arguments);
+          setTimeout(setupListeners, 800);
+          return res;
+        };
+      }
+
+      // Push existing if cloud empty
       db.ref('btn_private_chats').once('value').then(snap=>{
         if(!snap.val()){
-          let local = load('btn_private_chats', null);
+          let local=load('btn_private_chats', null);
           if(local && Object.keys(local).length>0){
             db.ref('btn_private_chats').set(local);
           }
         }
       });
 
-    }catch(e){ console.warn('Firebase init fail', e); }
+      // Expose for debug
+      window._setupChatListeners=setupListeners;
+
+    }catch(e){ console.warn('Firebase fail', e); }
   }
 
-  setTimeout(init, 1000);
+  setTimeout(init, 1200);
 })();
 </script>
 
